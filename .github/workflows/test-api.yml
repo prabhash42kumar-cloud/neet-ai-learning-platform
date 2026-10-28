@@ -1,0 +1,111 @@
+name: Test NEET AI API with Llama
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "api/**"
+      - "requirements.txt"
+      - ".github/workflows/test-api.yml"
+
+jobs:
+  test-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check Python syntax
+        run: python -m compileall -q api
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+
+      - name: Start Ollama server
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              echo "Ollama server is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Ollama did not start. Log follows:"
+          cat /tmp/ollama.log
+          exit 1
+
+      - name: Download Llama model
+        run: ollama pull llama3.2:1b
+
+      - name: Start FastAPI server
+        env:
+          OLLAMA_URL: http://127.0.0.1:11434
+          MODEL_NAME: llama3.2:1b
+        run: |
+          nohup uvicorn api.main:app --host 127.0.0.1 --port 8000 > /tmp/fastapi.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+              echo "FastAPI server is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FastAPI did not start. Log follows:"
+          cat /tmp/fastapi.log
+          exit 1
+
+      - name: Ask a NEET question and print the answer
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          payload = json.dumps({
+              "question": "NEET Biology: प्रकाश संश्लेषण क्या है? सरल हिंदी में 3 वाक्यों में समझाओ।"
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              "http://127.0.0.1:8000/ask",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=240) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              print("API returned HTTP error:", exc.code)
+              print(exc.read().decode("utf-8", errors="replace"))
+              raise
+
+          print("MODEL:", result.get("model", "unknown"))
+          print("LLAMA ANSWER:")
+          print(result.get("answer", "(No answer returned)"))
+          assert result.get("answer", "").strip(), "Model returned an empty answer"
+          print("API + Llama test passed.")
+          PY
+
+      - name: Show logs if a server step failed
+        if: failure()
+        run: |
+          echo "===== Ollama log ====="
+          if [ -f /tmp/ollama.log ]; then cat /tmp/ollama.log; fi
+          echo "===== FastAPI log ====="
+          if [ -f /tmp/fastapi.log ]; then cat /tmp/fastapi.log; fi
