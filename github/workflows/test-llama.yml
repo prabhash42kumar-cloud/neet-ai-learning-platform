@@ -1,0 +1,44 @@
+name: Test Llama AI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-llama:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh -o install-ollama.sh
+          sh install-ollama.sh
+
+      - name: Start Ollama
+        run: |
+          ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags; then
+              echo "Ollama started successfully"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat ollama.log
+          exit 1
+
+      - name: Download Llama model
+        run: |
+          ollama pull llama3.2:1b
+
+      - name: Test Llama with NEET question
+        run: |
+          curl -fsS http://127.0.0.1:11434/api/generate \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "llama3.2:1b",
+              "prompt": "Explain photosynthesis in simple Hindi for a NEET student.",
+              "stream": false
+            }' > answer.json
+
+          python -c "import json; print(json.load(open('answer.json'))['response'])"
